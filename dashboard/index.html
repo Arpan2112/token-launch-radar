@@ -21,6 +21,11 @@
       <div><span class="k">Source</span><span class="v">DefiLlama, sealed</span></div>
     </div>
   </div>
+  <div class="summary3">
+    <p><b>VALUE</b> — <span id="s-value">—</span></p>
+    <p><b>EVIDENCE</b> — <span id="s-evidence">—</span></p>
+    <p><b>ACTION</b> — <span id="s-action">—</span></p>
+  </div>
   <div class="stats" id="stats"></div>
 </header>
 
@@ -85,34 +90,44 @@
         leave-one-category-out as the blind test, and two rivals graded the same way — a flat median
         multiple, and a size-only line. The headline error is the median absolute log error: the
         typical factor the model misses by.</li>
-        <li><b>The band.</b> Each row's 80% band is set by that backtest: its half-width is the 80th
-        percentile of the leave-one-out errors, widened ×1.5 where a row sits outside the comps'
-        support or its five nearest trading twins disagree with the fit by more than 2×. Its measured
-        coverage on the comps is printed below — a band is a claim, and this one is checked.</li>
+        <li><b>The band.</b> Each row's 80% band is empirical, calibrated on the leave-one-out
+        errors: its half-width is their 80th percentile, widened ×1.5 where a row sits outside the
+        comps' support or its five nearest trading twins disagree with the fit by more than 2×. The
+        coverage printed below is the band's coverage on those same errors — apparent coverage, not
+        an independent validation — so a second procedure, jackknife+, is computed beside it and
+        each row's detail view shows both. The two procedures disagreeing would be the warning;
+        neither one resolves the shift between tokened comps and pre-token targets, and the page
+        does not pretend otherwise.</li>
         <li><b>Rank stability.</b> The program bootstraps the fit 200 times (seeded, so it is the
         same on every run) and re-ranks the board each time: every row carries a median rank, an 80%
         rank interval and its probability of a top-20 finish. Adjacent rows whose intervals overlap
         are, honestly, tied.</li>
-        <li><b>The farm verdict.</b> Expected value = P(launch) × implied value × community
-        allocation × the farmer's share × a realised factor, minus the plan's costs. P(launch) is the
-        snapshot's own tokened share for the protocol's age bucket, tilted by its category.
-        Allocation scenarios run 4% / 10% / 17% (the realised first-drop range, Sei to Hyperliquid);
-        the verdict uses the 10% base case. The farmer's share assumes qualifying wallets of $50,000
-        average size, tripled for the crowd that arrives once a launch is anticipated, with a
-        consistent weekly farmer earning twice one wallet. The realised factor is 0.5: most launches
-        trade far below their opening print. Costs are the plan's own — gas on its cheapest chain, a
-        5% a year opportunity cost on its capital over six months, and time at $10 an hour.
-        <b>FARM</b> clears its costs even at the band's low end, or by 3× at the centre; <b>THIN</b>
-        clears only at the centre; <b>SKIP</b> does not clear. Every row prints its break-even: the
-        launch value at which its plan's expected value equals its cost.</li>
+        <li><b>The farm verdict.</b> Expected value = launch propensity × implied value × community
+        allocation × the farmer's share × a realised factor, minus the plan's costs. The launch
+        propensity is the snapshot's own tokened share for the protocol's age bucket, tilted by its
+        category — the historical prevalence of tokens in its cohort, used as a proxy, not a
+        forecast that this protocol launches. Allocation scenarios run 4% / 10% / 17% (the realised
+        first-drop range, Sei to Hyperliquid); the verdict uses the 10% base case, and every
+        verdict is also re-graded at a 3% stress allocation — the board's headline counts how many
+        FARM verdicts survive the stress, and each detail view prints its own stress grade. The
+        farmer's share assumes qualifying wallets of $50,000 average size, tripled for the crowd
+        that arrives once a launch is anticipated, with a consistent weekly farmer earning twice
+        one wallet. The realised factor is 0.5: most launches trade far below their opening print.
+        Costs are the plan's own — gas on its cheapest chain, a 5% a year opportunity cost on its
+        capital over six months, and time at $10 an hour. <b>FARM</b> clears its costs even at the
+        band's low end, or by 3× at the centre; <b>THIN</b> clears only at the centre; <b>SKIP</b>
+        does not clear. Every row prints its break-even: the launch value at which its plan's
+        expected value equals its cost, and the stop condition that ends the plan.</li>
       </ol>
       <div id="backtest"></div>
       <p>The values are implied <i>market caps</i>, not FDVs: the snapshot records market caps and no
       supplies, and the two are not interchangeable. The board says a protocol <i>records no token</i>
       — DefiLlama's record is not proof that none exists. One measured caveat: a fit trained on the
       older half of the comps underprices the younger half by a median factor of
-      <span id="drift">—</span> — protocols that launched young priced hot — so young rows' values
-      here are, if anything, conservative. Protocols that are wrapped, staked, bridged or versioned
+      <span id="drift">—</span> — protocols that launched young priced hot. Rather than hide that or
+      silently correct for it, each detail view also prices its protocol with a fit on the youngest
+      half of the comps alone, labelled as a sensitivity: it illustrates the drift's pull on that
+      row, and it never moves the ranking. Protocols that are wrapped, staked, bridged or versioned
       products of a token that already trades are left off the board: their launch already happened,
       under another name.</p>
     </section>

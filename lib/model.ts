@@ -1,4 +1,15 @@
-// Token Launch Radar — model v3 ("fitted-compass radar").
+// Token Launch Radar — model v4 ("decision-grade radar"; the fit is radar-3's, kept whole).
+//
+// What v4 adds, none of it a new pricing rule: a jackknife+ band beside the LOO band (two
+// resampling procedures, shown together so a reader can see whether the interval depends on
+// the procedure — neither resolves the shift between tokened comps and pre-token targets);
+// a young-cohort fit published as a labelled sensitivity beside the full fit's primary value
+// (the age-split drift below measures why: a fit trained on older comps prices younger ones
+// low, and the board is mostly young protocols — the sensitivity illustrates that pull without
+// moving the ranking); a stress test of every farm verdict at a 3% community allocation, with
+// the count of FARM verdicts that survive it printed on the board; and honest names — the
+// launch figure is a propensity (the historical tokened share of a protocol's age cohort,
+// tilted by category), not a forecast probability.
 //
 // One sealed DefiLlama snapshot in, one ranked board out. The board covers every slug on the
 // snapshot's watchlist (the floor, never the ceiling) and adds every other protocol that records
@@ -93,6 +104,15 @@ export interface BacktestStats {
   age_split_drift_log: number;
   /** The largest family effect the shrinkage estimator would allow, in log10: ~0 = none survives. */
   family_effect_max_log: number;
+  /** Jackknife+ on the comps: empirical coverage of the jackknife+ 80% interval, on the comps. */
+  jk_coverage: number;
+  /** Jackknife+ median half-width in log10, beside the LOO band's half-width. */
+  jk_median_half_width_log: number;
+  /** The young half of the comps (below the median comp age) and its own leave-one-out error. */
+  young_comps: number;
+  young_loo_median_abs_log_error: number;
+  /** True when the young-cohort fit's own error is over 1.5x the full fit's: label it unstable. */
+  young_unstable: boolean;
 }
 
 /** A trading comparable, in the raw figures the fit consumes. */
@@ -119,6 +139,8 @@ export interface FarmConstants {
   alloc_bear: number;
   alloc_base: number;
   alloc_bull: number;
+  /** The stress allocation every verdict is re-graded at: 3% of the launch to the community. */
+  alloc_stress: number;
   realised_factor: number;
   opportunity_rate: number;
   horizon_months: number;
@@ -136,6 +158,7 @@ export const FARM: FarmConstants = {
   alloc_bear: 0.04,
   alloc_base: 0.1,
   alloc_bull: 0.17,
+  alloc_stress: 0.03,
   realised_factor: 0.5,
   opportunity_rate: 0.05,
   horizon_months: 6,
@@ -166,7 +189,7 @@ export const GAS_USD: Record<string, number> = {
 export const GAS_DEFAULT_USD = 0.5;
 
 /** The model's version label: the dashboard names it. */
-export const MODEL_VERSION = 'radar-3';
+export const MODEL_VERSION = 'radar-4';
 
 /** How many live-token protocols the dashboard's live view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -195,6 +218,9 @@ export interface BoardRow {
     age_factor: number;
     band_low_usd: number;
     band_high_usd: number;
+    jk_low_usd: number;
+    jk_high_usd: number;
+    young_implied_usd: number;
     twin_implied_usd: number;
     twin_disagreement: number;
     extrapolated: boolean;
@@ -208,6 +234,8 @@ export interface BoardRow {
     cost_total_usd: number;
     break_even_usd: number;
     verdict: 'FARM' | 'THIN' | 'SKIP';
+    ev_stress_usd: number;
+    verdict_stress: 'FARM' | 'THIN' | 'SKIP';
   };
   farm_steps: string[];
 }
@@ -231,6 +259,9 @@ export interface RadarRow {
   age_factor: number;
   band_low_usd: number;
   band_high_usd: number;
+  jk_low_usd: number;
+  jk_high_usd: number;
+  young_implied_usd: number;
   twin_implied_usd: number;
   twin_disagreement: number;
   extrapolated: boolean;
@@ -244,6 +275,8 @@ export interface RadarRow {
   cost_total_usd: number;
   break_even_usd: number;
   verdict: 'FARM' | 'THIN' | 'SKIP';
+  ev_stress_usd: number;
+  verdict_stress: 'FARM' | 'THIN' | 'SKIP';
   farm_steps: string[];
 }
 
@@ -288,6 +321,8 @@ export interface RadarData {
   gas_usd: Record<string, number>;
   gas_default_usd: number;
   base_rates: BaseRateBucket[];
+  /** The board-wide stress test: how many FARM verdicts survive a 3% community allocation. */
+  stress: { alloc: number; farm_at_base: number; farm_at_stress: number };
   protocols_size: number;
   watchlist_size: number;
   board_size: number;
@@ -566,6 +601,23 @@ export function compRows(snapshot: Snapshot): CompRow[] {
 }
 
 /**
+ * The leave-one-out fits themselves: for each comp, the fit redone without it, and that fit's
+ * absolute residual on the held-out comp. One computation feeds the LOO errors, the jackknife+
+ * band and the band's coverage, so all three always describe the same fits.
+ */
+export function leaveOneOutFits(comps: CompRow[]): { fits: FittedModel[]; absResiduals: number[] } {
+  const fits: FittedModel[] = [];
+  const absResiduals: number[] = [];
+  comps.forEach((held, i) => {
+    const fit = fitValueModel(comps.filter((_, j) => j !== i));
+    fits.push(fit);
+    const pred = predictLogValue(fit, held.tvl_usd, held.change_7d, held.age_days, held.category).logValue;
+    absResiduals.push(Math.abs(pred - Math.log10(held.mcap_usd)));
+  });
+  return { fits, absResiduals };
+}
+
+/**
  * Leave-one-out over the comps: for each comp, the whole fit redone without it and the held-out
  * protocol priced. Returns the signed log errors, in comp order.
  */
@@ -576,6 +628,41 @@ export function leaveOneOutErrors(comps: CompRow[]): number[] {
     const pred = predictLogValue(fit, held.tvl_usd, held.change_7d, held.age_days, held.category).logValue;
     return pred - Math.log10(held.mcap_usd);
   });
+}
+
+/**
+ * The jackknife+ interval for one protocol's figures, in log10: the 10th percentile of the
+ * leave-one-out predictions shifted down by their own residuals, and the 90th percentile of
+ * the same predictions shifted up. A second resampling procedure beside the LOO band: if the
+ * two intervals nearly coincide, the band does not hinge on the procedure chosen. Neither
+ * interval says anything about the shift between tokened comps and pre-token targets.
+ */
+export function jackknifeBandLog(
+  loo: { fits: FittedModel[]; absResiduals: number[] },
+  tvl: number,
+  change7d: number | null,
+  age: number | null,
+  category: string | null,
+): { low: number; high: number } {
+  const minus: number[] = [];
+  const plus: number[] = [];
+  loo.fits.forEach((fit, i) => {
+    const pred = predictLogValue(fit, tvl, change7d, age, category).logValue;
+    minus.push(pred - loo.absResiduals[i]!);
+    plus.push(pred + loo.absResiduals[i]!);
+  });
+  return { low: quantile(sortedNums(minus), 0.1), high: quantile(sortedNums(plus), 0.9) };
+}
+
+/** The comps split at their median age: the older half and the younger half (unknown age = 365). */
+export function ageSplit(comps: CompRow[]): { older: CompRow[]; younger: CompRow[]; medianAge: number } {
+  const ages = sortedNums(comps.map((c) => c.age_days ?? 365));
+  const medianAge = median(ages);
+  return {
+    older: comps.filter((c) => (c.age_days ?? 365) >= medianAge),
+    younger: comps.filter((c) => (c.age_days ?? 365) < medianAge),
+    medianAge,
+  };
 }
 
 /** Leave-one-category-out: refit without a whole category and price its members blind. */
@@ -680,21 +767,32 @@ export function backtestStats(comps: CompRow[]): BacktestStats {
   const famEffects = shrunkEffects(comps.map((c) => familyOf(c.category)), fullResiduals);
   const famMax = Math.max(0, ...Object.values(famEffects).map(Math.abs));
   // Age split: fit on the older half of the comps, measure the signed drift on the younger half.
-  const ages = sortedNums(comps.map((c) => c.age_days ?? 365));
-  const medianAge = median(ages);
-  const older = comps.filter((c) => (c.age_days ?? 365) >= medianAge);
-  const younger = comps.filter((c) => (c.age_days ?? 365) < medianAge);
+  const { older, younger } = ageSplit(comps);
   let drift = 0;
   if (older.length >= 10 && younger.length >= 5) {
     const fitOld = fitValueModel(older);
     const errs = younger.map((c) => predictLogValue(fitOld, c.tvl_usd, c.change_7d, c.age_days, c.category).logValue - Math.log10(c.mcap_usd));
     drift = median(sortedNums(errs));
   }
+  // The young-cohort fit graded on its own cohort, so its sensitivity values carry their grade.
+  const youngLooAbs = younger.length >= 10 ? sortedNums(leaveOneOutErrors(younger).map(Math.abs)) : [];
+  const youngMdale = youngLooAbs.length > 0 ? median(youngLooAbs) : 0;
+  // Jackknife+ on the comps themselves: each comp's interval from the leave-one-out fits, and
+  // how often the interval holds the comp's actual cap.
+  const looFits = leaveOneOutFits(comps);
+  let jkCovered = 0;
+  const jkHalfWidths: number[] = [];
+  for (const c of comps) {
+    const band = jackknifeBandLog(looFits, c.tvl_usd, c.change_7d, c.age_days, c.category);
+    jkHalfWidths.push((band.high - band.low) / 2);
+    if (Math.log10(c.mcap_usd) >= band.low && Math.log10(c.mcap_usd) <= band.high) jkCovered++;
+  }
   const halfWidth = quantile(looAbs, 0.8);
+  const looMdale = median(looAbs);
   return {
     comps: comps.length,
-    loo_median_abs_log_error: round4(median(looAbs)),
-    loo_typical_factor: round2(Math.pow(10, median(looAbs))),
+    loo_median_abs_log_error: round4(looMdale),
+    loo_typical_factor: round2(Math.pow(10, looMdale)),
     loo_spearman: round4(spearman(looPreds, comps.map((c) => Math.log10(c.mcap_usd)))),
     band_half_width_log: round4(halfWidth),
     band_coverage: round4(loo.filter((e) => Math.abs(e) <= halfWidth).length / Math.max(1, loo.length)),
@@ -704,6 +802,11 @@ export function backtestStats(comps: CompRow[]): BacktestStats {
     size_only_median_abs_log_error: round4(median(sortedNums(sizeOnlyErrors.map(Math.abs)))),
     age_split_drift_log: round4(drift),
     family_effect_max_log: round4(famMax),
+    jk_coverage: round4(jkCovered / Math.max(1, comps.length)),
+    jk_median_half_width_log: round4(median(sortedNums(jkHalfWidths))),
+    young_comps: younger.length,
+    young_loo_median_abs_log_error: round4(youngMdale),
+    young_unstable: youngMdale > 1.5 * looMdale,
   };
 }
 
@@ -790,6 +893,9 @@ export interface FarmEconomics {
   ev_low: number;
   break_even: number;
   verdict: 'FARM' | 'THIN' | 'SKIP';
+  /** The same economics re-graded at the stress allocation (3%): EV and verdict under stress. */
+  ev_base_stress: number;
+  verdict_stress: 'FARM' | 'THIN' | 'SKIP';
 }
 
 /** One row's farm economics: expected value against the plan's own costs, and the verdict. */
@@ -815,7 +921,13 @@ export function farmEconomics(p: SnapshotProtocol, age: number | null, implied: 
   const evLow = pLaunch * bandLow * FARM.alloc_base * share * FARM.realised_factor;
   const denom = pLaunch * FARM.alloc_base * share * FARM.realised_factor;
   const breakEven = denom > 0 ? costTotal / denom : Infinity;
-  const verdict: FarmEconomics['verdict'] = evLow >= costTotal || evBase >= FARM.farm_multiple * costTotal ? 'FARM' : evBase > costTotal ? 'THIN' : 'SKIP';
+  const grade = (evB: number, evL: number): FarmEconomics['verdict'] =>
+    evL >= costTotal || evB >= FARM.farm_multiple * costTotal ? 'FARM' : evB > costTotal ? 'THIN' : 'SKIP';
+  const verdict = grade(evBase, evLow);
+  // The stress grade: the same plan at a 3% community allocation instead of the 10% base.
+  const evBaseStress = pLaunch * implied * FARM.alloc_stress * share * FARM.realised_factor;
+  const evLowStress = pLaunch * bandLow * FARM.alloc_stress * share * FARM.realised_factor;
+  const verdictStress = grade(evBaseStress, evLowStress);
   return {
     capital,
     hold_days: hold,
@@ -828,6 +940,8 @@ export function farmEconomics(p: SnapshotProtocol, age: number | null, implied: 
     ev_low: Math.round(evLow),
     break_even: Math.round(Math.min(breakEven, 1e15)),
     verdict,
+    ev_base_stress: Math.round(evBaseStress),
+    verdict_stress: verdictStress,
   };
 }
 
@@ -898,7 +1012,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null, econ: FarmEco
       : `Come back once a week and make one small qualifying transaction on ${p.name}; steady weeks count for more than one large day. Cost: about ${gas} a week. Time: 10 minutes a week.`;
   const verdictLine =
     econ.verdict === 'FARM'
-      ? `Verdict: FARM. At a ${(pLaunch * 100).toFixed(0)}% launch chance the plan's expected value is ${usd(econ.ev_base)} against ${usd(econ.cost_total)} of cost, and it breaks even if the launch values at ${usd(econ.break_even)} or more. Cost: nothing further. Time: 2 minutes to read.`
+      ? `Verdict: FARM. At a ${(pLaunch * 100).toFixed(0)}% launch propensity the plan's expected value is ${usd(econ.ev_base)} against ${usd(econ.cost_total)} of cost, and it breaks even if the launch values at ${usd(econ.break_even)} or more. Cost: nothing further. Time: 2 minutes to read.`
       : econ.verdict === 'THIN'
         ? `Verdict: THIN. The plan's expected value is ${usd(econ.ev_base)} against ${usd(econ.cost_total)} of cost at the centre of the band only; it breaks even if the launch values at ${usd(econ.break_even)} or more. Farm it only with capital that earns yield while it waits. Cost: nothing further. Time: 2 minutes to read.`
         : `Verdict: SKIP. The plan's expected value is ${usd(econ.ev_base)} against ${usd(econ.cost_total)} of cost; it would need a launch value of ${usd(econ.break_even)} or more to break even. Keep it on the watchlist and spend the capital where the verdict is FARM. Cost: nothing. Time: 2 minutes to read.`;
@@ -943,6 +1057,9 @@ export function buildBoard(snapshot: Snapshot): {
   const fitSet = comps.filter((c) => c.fit_eligible);
   const fit = fitValueModel(fitSet);
   const backtest = backtestStats(fitSet);
+  const looFits = leaveOneOutFits(fitSet);
+  const { younger } = ageSplit(fitSet);
+  const youngFit = younger.length >= 10 ? fitValueModel(younger) : null;
   const buckets = baseRates(snapshot);
   const scales = twinScales(fitSet);
   const compLogTvls = sortedNums(fitSet.map((c) => Math.log10(c.tvl_usd)));
@@ -960,6 +1077,9 @@ export function buildBoard(snapshot: Snapshot): {
     implied: number;
     bandLow: number;
     bandHigh: number;
+    jkLow: number;
+    jkHigh: number;
+    youngImplied: number;
     twinImplied: number;
     disagreement: number;
     extrapolated: boolean;
@@ -978,9 +1098,16 @@ export function buildBoard(snapshot: Snapshot): {
     const half = backtest.band_half_width_log * widen;
     const bandLow = Math.max(1, Math.round(Math.pow(10, pred.logValue - half)));
     const bandHigh = Math.round(Math.pow(10, pred.logValue + half));
+    const jk = jackknifeBandLog(looFits, p.tvl_usd, p.change_7d, age, p.category);
+    const jkLow = Math.max(1, Math.round(Math.pow(10, jk.low)));
+    const jkHigh = Math.round(Math.pow(10, jk.high));
+    const youngImplied =
+      youngFit !== null
+        ? Math.max(1, Math.round(Math.pow(10, predictLogValue(youngFit, p.tvl_usd, p.change_7d, age, p.category).logValue)))
+        : implied;
     const pLaunch = launchProbability(snapshot, buckets, p, age);
     const econ = farmEconomics(p, age, implied, bandLow, pLaunch);
-    return { p, age, pred, implied, bandLow, bandHigh, twinImplied: Math.round(twinImplied), disagreement, extrapolated, pLaunch, econ };
+    return { p, age, pred, implied, bandLow, bandHigh, jkLow, jkHigh, youngImplied, twinImplied: Math.round(twinImplied), disagreement, extrapolated, pLaunch, econ };
   };
   const scored = rows.map(scoreOne);
 
@@ -1028,6 +1155,9 @@ export function buildBoard(snapshot: Snapshot): {
         age_factor: round4(s.pred.ageFactor),
         band_low_usd: s.bandLow,
         band_high_usd: s.bandHigh,
+        jk_low_usd: s.jkLow,
+        jk_high_usd: s.jkHigh,
+        young_implied_usd: s.youngImplied,
         twin_implied_usd: s.twinImplied,
         twin_disagreement: round2(s.disagreement),
         extrapolated: s.extrapolated,
@@ -1041,6 +1171,8 @@ export function buildBoard(snapshot: Snapshot): {
         cost_total_usd: s.econ.cost_total,
         break_even_usd: s.econ.break_even,
         verdict: s.econ.verdict,
+        ev_stress_usd: s.econ.ev_base_stress,
+        verdict_stress: s.econ.verdict_stress,
       },
       farm_steps: farmSteps(s.p, s.age, s.econ, s.pLaunch),
     };
@@ -1095,6 +1227,9 @@ export function radarRow(row: BoardRow): RadarRow {
     age_factor: row.model.age_factor,
     band_low_usd: row.model.band_low_usd,
     band_high_usd: row.model.band_high_usd,
+    jk_low_usd: row.model.jk_low_usd,
+    jk_high_usd: row.model.jk_high_usd,
+    young_implied_usd: row.model.young_implied_usd,
     twin_implied_usd: row.model.twin_implied_usd,
     twin_disagreement: row.model.twin_disagreement,
     extrapolated: row.model.extrapolated,
@@ -1108,6 +1243,8 @@ export function radarRow(row: BoardRow): RadarRow {
     cost_total_usd: row.model.cost_total_usd,
     break_even_usd: row.model.break_even_usd,
     verdict: row.model.verdict,
+    ev_stress_usd: row.model.ev_stress_usd,
+    verdict_stress: row.model.verdict_stress,
     farm_steps: row.farm_steps,
   };
 }
@@ -1128,6 +1265,11 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
     gas_usd: GAS_USD,
     gas_default_usd: GAS_DEFAULT_USD,
     base_rates: buckets,
+    stress: {
+      alloc: FARM.alloc_stress,
+      farm_at_base: board.filter((r) => r.model.verdict === 'FARM').length,
+      farm_at_stress: board.filter((r) => r.model.verdict === 'FARM' && r.model.verdict_stress === 'FARM').length,
+    },
     protocols_size: snapshot.protocols.length,
     watchlist_size: snapshot.watchlist.length,
     board_size: board.length,

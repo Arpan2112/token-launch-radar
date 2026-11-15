@@ -100,6 +100,33 @@ function leaveOneOutErrors(comps) {
     return predictLogValue(fit, held.tvl_usd, held.change_7d, held.age_days).logValue - Math.log10(held.mcap_usd);
   });
 }
+function leaveOneOutFits(comps) {
+  const fits = [], absResiduals = [];
+  comps.forEach((held, i) => {
+    const fit = fitValueModel(comps.filter((_, j) => j !== i));
+    fits.push(fit);
+    absResiduals.push(Math.abs(predictLogValue(fit, held.tvl_usd, held.change_7d, held.age_days).logValue - Math.log10(held.mcap_usd)));
+  });
+  return { fits, absResiduals };
+}
+function jackknifeBandLog(loo, tvl, change7d, ageDays) {
+  const minus = [], plus = [];
+  loo.fits.forEach((fit, i) => {
+    const pred = predictLogValue(fit, tvl, change7d, ageDays).logValue;
+    minus.push(pred - loo.absResiduals[i]);
+    plus.push(pred + loo.absResiduals[i]);
+  });
+  return { low: quantile(sortedNums(minus), 0.1), high: quantile(sortedNums(plus), 0.9) };
+}
+function ageSplit(comps) {
+  const ages = sortedNums(comps.map((c) => c.age_days ?? 365));
+  const medianAge = median(ages);
+  return {
+    older: comps.filter((c) => (c.age_days ?? 365) >= medianAge),
+    younger: comps.filter((c) => (c.age_days ?? 365) < medianAge),
+    medianAge,
+  };
+}
 function leaveOneCategoryOutErrors(comps) {
   const errors = [];
   for (const cat of [...new Set(comps.map((c) => c.category ?? ''))]) {
@@ -214,8 +241,12 @@ function farmVerdict(r) {
   const evLow = r.p_launch * r.band_low_usd * F.alloc_base * share * F.realised_factor;
   const denom = r.p_launch * F.alloc_base * share * F.realised_factor;
   const breakEven = denom > 0 ? Math.min(costTotal / denom, 1e15) : 1e15;
-  const verdict = evLow >= costTotal || evBase >= F.farm_multiple * costTotal ? 'FARM' : evBase > costTotal ? 'THIN' : 'SKIP';
-  return { capital, hold, gasTotal, opportunity, timeCost, costTotal, users, share, evBase, evLow, breakEven, verdict };
+  const grade = (evB, evL) => (evL >= costTotal || evB >= F.farm_multiple * costTotal ? 'FARM' : evB > costTotal ? 'THIN' : 'SKIP');
+  const verdict = grade(evBase, evLow);
+  const evBaseStress = r.p_launch * r.implied_value_usd * F.alloc_stress * share * F.realised_factor;
+  const evLowStress = r.p_launch * r.band_low_usd * F.alloc_stress * share * F.realised_factor;
+  const verdictStress = grade(evBaseStress, evLowStress);
+  return { capital, hold, gasTotal, opportunity, timeCost, costTotal, users, share, evBase, evLow, breakEven, verdict, evBaseStress, verdictStress };
 }
 
 /* ---------- run the model on this page ---------- */
@@ -260,7 +291,31 @@ const FAM_MAX = (() => {
   const eff = shrunkEffects(COMPS.map((c) => familyOf(c.category)), residuals);
   return Math.max(0, ...Object.values(eff).map(Math.abs));
 })();
+const LOO_FITS = leaveOneOutFits(COMPS);
+const JK = (() => {
+  let covered = 0;
+  const halves = [];
+  for (const c of COMPS) {
+    const band = jackknifeBandLog(LOO_FITS, c.tvl_usd, c.change_7d, c.age_days);
+    halves.push((band.high - band.low) / 2);
+    if (Math.log10(c.mcap_usd) >= band.low && Math.log10(c.mcap_usd) <= band.high) covered++;
+  }
+  return { coverage: covered / COMPS.length, halfWidth: median(sortedNums(halves)) };
+})();
+const YOUNG = (() => {
+  const { younger } = ageSplit(COMPS);
+  const fit = younger.length >= 10 ? fitValueModel(younger) : null;
+  const mdale = younger.length >= 10 ? median(sortedNums(leaveOneOutErrors(younger).map(Math.abs))) : 0;
+  return { fit, comps: younger.length, mdale, unstable: mdale > 1.5 * MDALE };
+})();
+const JK_BANDS = new Map(R.rows.map((r) => {
+  const band = jackknifeBandLog(LOO_FITS, r.tvl_usd, r.change_7d, r.age_days);
+  return [r.slug, { low: Math.max(1, Math.round(Math.pow(10, band.low))), high: Math.round(Math.pow(10, band.high)) }];
+}));
+const YOUNG_IMPLIED = new Map(R.rows.map((r) => [r.slug,
+  YOUNG.fit ? Math.max(1, Math.round(Math.pow(10, predictLogValue(YOUNG.fit, r.tvl_usd, r.change_7d, r.age_days).logValue))) : r.implied_value_usd]));
 const VERDICTS = new Map(R.rows.map((r) => [r.slug, farmVerdict(r)]));
+const STRESS_SURVIVORS = R.rows.filter((r) => VERDICTS.get(r.slug).verdict === 'FARM' && VERDICTS.get(r.slug).verdictStress === 'FARM').length;
 
 /* ================= rendering ================= */
 $('m-asof').textContent = R.as_of;
@@ -273,8 +328,11 @@ $('stats').innerHTML = [
   [R.board_size, 'pre-token rows ranked'],
   [COMPS.length, 'comps the fit learned from'],
   ['×' + Math.pow(10, MDALE).toFixed(1), 'typical backtest miss'],
-  [farmCount, 'rows verdict FARM'],
+  [farmCount + ' → ' + STRESS_SURVIVORS, 'FARM at 10% → at 3% stress'],
 ].map(([n, l]) => `<div class="stat"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
+$('s-value').textContent = `${R.board_size} pre-token protocols, each valued against the ${COMPS.length} tokened comparables the fit learned from.`;
+$('s-evidence').textContent = `Log-log OLS, graded out of sample: ×${Math.pow(10, MDALE).toFixed(2)} typical leave-one-out miss, an empirical 80% band calibrated on those errors, cross-checked by a jackknife+ band.`;
+$('s-action').textContent = `Costed farm plans with break-evens: ${farmCount} verdicts FARM at a 10% community allocation, ${STRESS_SURVIVORS} still FARM when the allocation is stressed to 3%.`;
 $('fx-test').textContent = '×' + Math.pow(10, FAM_MAX).toFixed(2);
 $('drift').textContent = '×' + Math.pow(10, -DRIFT).toFixed(1);
 $('backtest').innerHTML = `
@@ -287,8 +345,10 @@ $('backtest').innerHTML = `
     <tr><td>Leave-one-out median error — flat median multiple</td><td class="num">×${Math.pow(10, MED_MULT_MDALE).toFixed(2)}</td></tr>
     <tr><td>Leave-one-category-out median error (the blind test)</td><td class="num">×${Math.pow(10, LOCO_MDALE).toFixed(2)}</td></tr>
     <tr><td>Rank correlation of the out-of-sample predictions (Spearman)</td><td class="num">${SPEAR.toFixed(2)}</td></tr>
-    <tr><td>Band half-width from the backtest; measured coverage on the comps</td><td class="num">×${Math.pow(10, HALF).toFixed(1)} · ${(COVERAGE * 100).toFixed(0)}%</td></tr>
-    <tr><td>Launch base rates in the snapshot (tokened share by age)</td><td class="num">${R.base_rates.map((b) => `${b.label} ${(b.p_launch * 100).toFixed(0)}%`).join(' · ')}</td></tr>
+    <tr><td>80% band: empirical, calibrated on the leave-one-out errors; its apparent coverage on those same comps</td><td class="num">×${Math.pow(10, HALF).toFixed(1)} · ${(COVERAGE * 100).toFixed(0)}%</td></tr>
+    <tr><td>Jackknife+ cross-check: median half-width; empirical coverage on the comps</td><td class="num">×${Math.pow(10, JK.halfWidth).toFixed(1)} · ${(JK.coverage * 100).toFixed(0)}%</td></tr>
+    <tr><td>Young-cohort fit (${YOUNG.comps} comps under the median age), its own leave-one-out error — the sensitivity anchor in each detail view</td><td class="num">×${Math.pow(10, YOUNG.mdale).toFixed(2)}${YOUNG.unstable ? ' · unstable' : ''}</td></tr>
+    <tr><td>Launch propensity base rates in the snapshot (tokened share by age)</td><td class="num">${R.base_rates.map((b) => `${b.label} ${(b.p_launch * 100).toFixed(0)}%`).join(' · ')}</td></tr>
   </table>`;
 
 const state = { q: '', cat: '', chain: '', wl: false, vd: '', sort: 'rank' };
@@ -373,7 +433,7 @@ function renderDetail(r) {
     tracked by DefiLlama since ${esc(r.listed_at ?? 'an unrecorded date')} · records no token in the snapshot of ${R.as_of}.</p>
     <div class="d-grid">
       <div class="d-stat"><div class="n">${money(r.implied_value_usd)}</div><div class="l">Implied launch market cap</div></div>
-      <div class="d-stat"><div class="n">${money(r.band_low_usd)} – ${money(r.band_high_usd)}</div><div class="l">80% band (backtest-set)</div></div>
+      <div class="d-stat"><div class="n">${money(r.band_low_usd)} – ${money(r.band_high_usd)}</div><div class="l">80% band (empirical, calibrated on LOO errors)</div></div>
       <div class="d-stat"><div class="n">${money(r.tvl_usd)}</div><div class="l">TVL</div></div>
       <div class="d-stat"><div class="n">${(r.p_top20 * 100).toFixed(0)}%</div><div class="l">Chance of a top-20 rank (bootstrap)</div></div>
       <div class="d-stat"><div class="n"><span class="chip ${v.verdict.toLowerCase()}">${v.verdict}</span></div><div class="l">Farm verdict</div></div>
@@ -385,6 +445,8 @@ function renderDetail(r) {
         <tr><td>× growth (7-day TVL change ${r.change_7d === null ? 'not recorded' : r.change_7d.toFixed(1) + '%'}, winsorised)</td><td class="num">× ${pred.growthFactor.toFixed(4)}</td></tr>
         <tr><td>× age (${ageText(r.age_days)} with no token)</td><td class="num">× ${pred.ageFactor.toFixed(4)}</td></tr>
         <tr class="total"><td>Implied launch market cap = TVL × the three lines above</td><td class="num">${money(r.implied_value_usd)}</td></tr>
+        <tr><td>Jackknife+ band (the second resampling procedure, unwidened)</td><td class="num">${money(JK_BANDS.get(r.slug).low)} – ${money(JK_BANDS.get(r.slug).high)}</td></tr>
+        <tr><td>Young-cohort sensitivity (a fit on the ${YOUNG.comps} youngest comps only; illustrates the age drift, never moves the ranking)</td><td class="num">${money(YOUNG_IMPLIED.get(r.slug))}</td></tr>
       </table>
       <p>The same fitted line prices every row; only the protocol's own figures change. Category effects were
       tested by shrinkage and rejected — no category term is hiding in this number.</p>
@@ -414,12 +476,14 @@ function renderDetail(r) {
     <section class="panel">
       <h2>Farm plan — verdict ${v.verdict}</h2>
       <table class="math">
-        <tr><td>Launch chance (snapshot base rate for its age, category-tilted)</td><td class="num">${(r.p_launch * 100).toFixed(0)}%</td></tr>
+        <tr><td>Launch propensity (the historical tokened share of its age cohort, category-tilted — a prevalence proxy, not a forecast)</td><td class="num">${(r.p_launch * 100).toFixed(0)}%</td></tr>
         <tr><td>Farmer's share of the drop (≈${v.users.toLocaleString('en-US')} qualifying wallets after dilution, weekly farmer at 2×)</td><td class="num">${(v.share * 100).toFixed(3)}%</td></tr>
         <tr><td>Expected value at the base case (10% allocation, realised factor 0.5)</td><td class="num">${money(Math.round(v.evBase))}</td></tr>
         <tr><td>Expected value at the band's low end</td><td class="num">${money(Math.round(v.evLow))}</td></tr>
+        <tr><td>Stress test at a 3% allocation: expected value, and the verdict it earns there</td><td class="num">${money(Math.round(v.evBaseStress))} · ${v.verdictStress}</td></tr>
         <tr><td>Plan cost (gas ${money(v.gasTotal)} + opportunity ${money(v.opportunity)} + time ${money(v.timeCost)})</td><td class="num">${money(v.costTotal)}</td></tr>
         <tr class="total"><td>Break-even launch value</td><td class="num">${money(Math.round(v.breakEven))}</td></tr>
+        <tr><td>Stop condition</td><td class="num">Exit if a re-run of this radar prices the band's low end under the break-even, or if no qualifying action is possible two weeks running</td></tr>
       </table>
       <ol class="farm">${r.farm_steps.map((s) => `<li>${esc(s)}</li>`).join('')}</ol>
       <p>One wallet per protocol, a steady weekly rhythm, and never pay to claim: a launch, if it comes,

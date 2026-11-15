@@ -9,7 +9,27 @@ A token launch radar for make.fun's "Build the best token launch radar" bounty
 ranks the 198 that record no token yet by an implied launch value, and hands in a static
 dashboard that shows the board, a detail view for every protocol, and the steps to farm each one.
 
-## The model (radar-3, fitted and backtested)
+## The model (radar-4, decision-grade)
+
+The radar-3 fit, kept whole — v4 changes how honestly the board presents what the fit knows,
+and how hard each verdict is tested before it is printed:
+
+- **Two bands, labelled precisely** — the headline 80% band is empirical, calibrated on the
+  leave-one-out errors (its 80.7% coverage is coverage on those same errors, and the page says
+  so). A jackknife+ band is computed beside it: on the comps it is wider (median half-width
+  ×22.8 against the LOO band's ×10.0) with 92.1% empirical coverage. Two resampling procedures,
+  shown together; neither resolves the shift between tokened comps and pre-token targets.
+- **A dual anchor for the age drift** — a fit trained on the older half of the comps underprices
+  the younger half by a median ×5.7. The full fit stays the primary value; each detail view
+  also prices its protocol with a fit on the 57 youngest comps alone (its own leave-one-out
+  miss ×4.53), labelled as a sensitivity that never moves the ranking.
+- **Verdicts stress-tested** — every farm verdict is re-graded at a 3% community allocation:
+  of the 133 FARM verdicts at the 10% base case, 20 survive the stress. The board's header
+  prints that count; each detail view prints its own stress grade and a stop condition.
+- **Honest names** — the launch figure is a launch *propensity*: the historical tokened share
+  of a protocol's age cohort, tilted by category. A prevalence proxy, not a forecast.
+
+## The model underneath (radar-3, fitted and backtested)
 
 No hand-set multiples and no hand-picked names: the pricing rule is fitted to the snapshot's
 own trading protocols (the comps) and graded out of sample, in the open.
@@ -28,8 +48,8 @@ own trading protocols (the comps) and graded out of sample, in the open.
   twins disagree with the fit by more than 2×.
 - **Rank stability** — a seeded bootstrap (200 refits) gives every row a median rank, an 80%
   rank interval and a top-20 probability.
-- **Farm verdicts** — expected value = P(launch, from the snapshot's own age-bucket base
-  rates) × implied market cap × 10% base allocation × the farmer's share (qualifying wallets
+- **Farm verdicts** — expected value = launch propensity (the snapshot's own age-bucket
+  tokened share) × implied market cap × 10% base allocation × the farmer's share (qualifying wallets
   at a $50,000 average position, tripled for launch dilution, weekly farmer at 2×) × a 0.5
   realised factor, minus the plan's gas, opportunity and time costs. FARM clears its costs at
   the band's low end or by 3× at the centre; THIN clears only at the centre; SKIP does not
