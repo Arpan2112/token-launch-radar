@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Token Launch Radar — pre-token protocols ranked by implied launch value</title>
+<title>Token Launch Radar — pre-token protocols priced by a fitted, backtested model</title>
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
@@ -11,8 +11,9 @@
   <div class="masthead-in">
     <div>
       <h1><span class="blip"></span>Token Launch Radar</h1>
-      <p class="sub">Every protocol in the snapshot that records no token yet, ranked by what its launch
-      would be worth if it issued one at the price its trading peers already get — and how to farm each one.</p>
+      <p class="sub">Every protocol in the snapshot that records no token yet, priced by a model fitted
+      to the protocols whose tokens already trade — graded out of sample, banded by its own measured
+      error, and given a farm verdict that nets the plan's expected value against its costs.</p>
     </div>
     <div class="mast-meta">
       <div><span class="k">Snapshot</span><span class="v" id="m-asof">—</span></div>
@@ -29,9 +30,16 @@
       <input id="q" type="search" placeholder="Search protocols…" aria-label="Search protocols">
       <select id="f-cat" aria-label="Filter by category"></select>
       <select id="f-chain" aria-label="Filter by chain"></select>
+      <select id="f-verdict" aria-label="Filter by farm verdict">
+        <option value="">All verdicts</option>
+        <option value="FARM">FARM only</option>
+        <option value="THIN">THIN only</option>
+        <option value="SKIP">SKIP only</option>
+      </select>
       <label class="check"><input id="f-wl" type="checkbox"> Watchlist only</label>
       <select id="f-sort" aria-label="Sort the board">
         <option value="rank">Sort: implied value</option>
+        <option value="ev">Sort: farm expected value</option>
         <option value="tvl">Sort: TVL</option>
         <option value="change">Sort: 7-day change</option>
         <option value="age">Sort: age</option>
@@ -42,42 +50,76 @@
 
     <table class="board">
       <thead><tr>
-        <th class="num">#</th><th>Protocol</th><th>Category</th><th>Chains</th>
+        <th class="num">#</th><th>Protocol</th><th>Category</th>
         <th class="num">TVL</th><th class="num">7d</th><th class="num">Age</th>
-        <th class="num">Implied value</th><th class="num">× TVL</th>
+        <th class="num">Implied value</th><th class="num">80% band</th><th>Verdict</th>
       </tr></thead>
       <tbody id="rows"></tbody>
     </table>
-    <p class="hint">Select a protocol for its detail view: the arithmetic behind its implied value,
-    the trading peers it was priced against, and its farm plan. A ★ marks the snapshot's own watchlist —
-    the $50M floor every row here is measured against, never the ceiling of this board.</p>
+    <p class="hint">Select a protocol for its detail view: the fitted arithmetic behind its value, the
+    five trading twins it was checked against, its rank stability, and its farm plan with the verdict's
+    working. A ★ marks the snapshot's own watchlist — the $50M floor every row here is measured
+    against, never the ceiling of this board. Note the top of the board: the largest protocols are
+    often THIN or SKIP farms, because a small farmer's share of a giant protocol's drop is tiny —
+    the verdict, not the value, is the farming signal.</p>
 
     <section class="panel" id="method">
-      <h2>How the implied value is built</h2>
-      <p>Nothing here is a hand-picked list. One function prices every row from the snapshot's own
-      figures, and each row's detail view shows its arithmetic:</p>
+      <h2>How the value is built — and how it was graded</h2>
+      <p>Nothing here is a hand-picked list, and no adjustment in the model was chosen by hand. One
+      regression is fitted to the snapshot's own trading protocols (the <i>comps</i>), and this page
+      refits it in front of you from the comp set it ships with: the coefficients and every backtest
+      number below are computed by the code on this page, from the same figures the board was priced
+      with.</p>
       <ol class="formula">
-        <li><b>Peer multiple.</b> For the protocol's category, take every protocol whose token already
-        trades and divide its market cap by its TVL. The multiple is the <i>median</i> of those ratios,
-        so one runaway token cannot bend it. A category with fewer than 3 trading peers falls back to the
-        median across all tokened protocols except centralised exchanges.</li>
-        <li><b>Momentum.</b> The 7-day TVL change, clamped to −50%…+150%, moves the value by up to
-        ×0.35 of itself: a protocol gathering TVL this week is priced above a shrinking one.</li>
-        <li><b>Maturity.</b> ×0.70 for a brand-new listing rising to ×1.20 at four years tracked with no
-        token: the longer a protocol has run at scale without issuing, the more a launch would carry.</li>
-        <li><b>Size.</b> ×0.55 at $5M of TVL rising on a log scale to ×1.00 at $500M: small protocols
-        launch into thinner markets than the peers their multiple came from.</li>
+        <li><b>The fit.</b> For each comp, log<sub>10</sub>(market cap) is regressed on
+        log<sub>10</sub>(TVL), a winsorised 7-day growth term, and log<sub>10</sub>(1 + age in days
+        with no token). The fitted slope on TVL is well under 1, so a flat Mcap×TVL multiple — the
+        earlier radar's rule — systematically overprices large protocols and underprices small ones.
+        Comps whose cap is under 0.002× or over 20× their TVL are tokens priced on something other
+        than protocol TVL; they sit out the fit (and are still shown as peers).</li>
+        <li><b>Category effects were tested, and rejected.</b> An empirical-Bayes shrinkage estimate
+        of the per-family residual medians was run on the fit: the largest effect it allows is
+        <span id="fx-test">—</span>, inside the model's own typical error, so no category term enters
+        any price. What a protocol is matters less than how big, how fast and how old it is.</li>
+        <li><b>The backtest.</b> Leave-one-out over every comp (the whole fit redone without it),
+        leave-one-category-out as the blind test, and two rivals graded the same way — a flat median
+        multiple, and a size-only line. The headline error is the median absolute log error: the
+        typical factor the model misses by.</li>
+        <li><b>The band.</b> Each row's 80% band is set by that backtest: its half-width is the 80th
+        percentile of the leave-one-out errors, widened ×1.5 where a row sits outside the comps'
+        support or its five nearest trading twins disagree with the fit by more than 2×. Its measured
+        coverage on the comps is printed below — a band is a claim, and this one is checked.</li>
+        <li><b>Rank stability.</b> The program bootstraps the fit 200 times (seeded, so it is the
+        same on every run) and re-ranks the board each time: every row carries a median rank, an 80%
+        rank interval and its probability of a top-20 finish. Adjacent rows whose intervals overlap
+        are, honestly, tied.</li>
+        <li><b>The farm verdict.</b> Expected value = P(launch) × implied value × community
+        allocation × the farmer's share × a realised factor, minus the plan's costs. P(launch) is the
+        snapshot's own tokened share for the protocol's age bucket, tilted by its category.
+        Allocation scenarios run 4% / 10% / 17% (the realised first-drop range, Sei to Hyperliquid);
+        the verdict uses the 10% base case. The farmer's share assumes qualifying wallets of $50,000
+        average size, tripled for the crowd that arrives once a launch is anticipated, with a
+        consistent weekly farmer earning twice one wallet. The realised factor is 0.5: most launches
+        trade far below their opening print. Costs are the plan's own — gas on its cheapest chain, a
+        5% a year opportunity cost on its capital over six months, and time at $10 an hour.
+        <b>FARM</b> clears its costs even at the band's low end, or by 3× at the centre; <b>THIN</b>
+        clears only at the centre; <b>SKIP</b> does not clear. Every row prints its break-even: the
+        launch value at which its plan's expected value equals its cost.</li>
       </ol>
-      <p class="eq">implied value = TVL × peer multiple × momentum × maturity × size, rounded to whole dollars.</p>
-      <p>The board says a protocol <i>records no token</i> — DefiLlama's record is not proof that none
-      exists — and an implied value is this model's claim about a launch that may never happen, not a
-      prediction that it will. Protocols that are wrapped, staked, bridged or versioned products of a
-      token that already trades are left off the board: their launch already happened, under another name.</p>
+      <div id="backtest"></div>
+      <p>The values are implied <i>market caps</i>, not FDVs: the snapshot records market caps and no
+      supplies, and the two are not interchangeable. The board says a protocol <i>records no token</i>
+      — DefiLlama's record is not proof that none exists. One measured caveat: a fit trained on the
+      older half of the comps underprices the younger half by a median factor of
+      <span id="drift">—</span> — protocols that launched young priced hot — so young rows' values
+      here are, if anything, conservative. Protocols that are wrapped, staked, bridged or versioned
+      products of a token that already trades are left off the board: their launch already happened,
+      under another name.</p>
     </section>
 
     <section class="panel" id="live-panel">
       <h2>Already trading — set aside, not ranked</h2>
-      <p>The largest tokened protocols in the snapshot. They are the peer set the model prices from;
+      <p>The largest tokened protocols in the snapshot. They are the comp set the model is fitted on;
       the market has already given them a value, so the radar does not invent one.</p>
       <table class="board live">
         <thead><tr><th>Protocol</th><th>Category</th><th class="num">TVL</th><th class="num">Market cap</th><th class="num">Mcap × TVL</th></tr></thead>
@@ -91,8 +133,9 @@
 
 <footer>
   <p id="foot-source">—</p>
-  <p>Implied values are one model's arithmetic on a sealed snapshot, stated so they can be checked —
-  not investment advice, and not a promise that any protocol will issue a token.</p>
+  <p>Implied values are one fitted model's arithmetic on a sealed snapshot, graded out of sample and
+  stated so they can be checked — not investment advice, and not a promise that any protocol will
+  issue a token.</p>
 </footer>
 
 <script src="../data.js"></script>

@@ -9,18 +9,35 @@ A token launch radar for make.fun's "Build the best token launch radar" bounty
 ranks the 198 that record no token yet by an implied launch value, and hands in a static
 dashboard that shows the board, a detail view for every protocol, and the steps to farm each one.
 
-## The model (radar-2, peer multiples)
+## The model (radar-3, fitted and backtested)
 
-One function prices every row from the snapshot's own figures — no hand-picked names:
+No hand-set multiples and no hand-picked names: the pricing rule is fitted to the snapshot's
+own trading protocols (the comps) and graded out of sample, in the open.
 
-- **Peer multiple** — the median market-cap/TVL of the tokened protocols in the same category
-  (at least 3 peers), else the median across all tokened protocols except centralised exchanges.
-- **Momentum** — the 7-day TVL change, clamped to −50%…+150%, weighted ×0.35.
-- **Maturity** — ×0.70 rising to ×1.20 over four years tracked with no token.
-- **Size** — ×0.55 at $5M TVL rising on a log scale to ×1.00 at $500M.
+- **The fit** — log₁₀(market cap) regressed on log₁₀(TVL), a winsorised 7-day growth term, and
+  log₁₀(1 + age with no token), over the 114 comps whose tokens are priced on TVL at all
+  (a cap under 0.002× or over 20× TVL sits out the fit). The fitted TVL slope is 0.575, so a
+  flat Mcap×TVL multiple systematically overprices large protocols.
+- **Category effects: tested, rejected** — an empirical-Bayes shrinkage estimate of per-family
+  residual medians allows at most a ×1.20 effect, inside the model's own typical error, so no
+  category term enters any price.
+- **The backtest** — leave-one-out over every comp, leave-one-category-out as the blind test,
+  and two rivals graded the same way. Median miss: fitted ×3.22, size-only line ×3.27, flat
+  median multiple ×4.72. Each row's 80% band is set by the backtest's 80th-percentile error
+  (measured coverage 80.7%), widened where the row extrapolates or its five nearest trading
+  twins disagree with the fit by more than 2×.
+- **Rank stability** — a seeded bootstrap (200 refits) gives every row a median rank, an 80%
+  rank interval and a top-20 probability.
+- **Farm verdicts** — expected value = P(launch, from the snapshot's own age-bucket base
+  rates) × implied market cap × 10% base allocation × the farmer's share (qualifying wallets
+  at a $50,000 average position, tripled for launch dilution, weekly farmer at 2×) × a 0.5
+  realised factor, minus the plan's gas, opportunity and time costs. FARM clears its costs at
+  the band's low end or by 3× at the centre; THIN clears only at the centre; SKIP does not
+  clear. Every row prints its break-even launch value.
 
-implied value = TVL × peer multiple × momentum × maturity × size. Every row of the board
-carries its own arithmetic, and the dashboard's detail view shows it line by line.
+Values are implied market caps, not FDVs — the snapshot records no supplies. The dashboard
+refits the model in the page from the comp set it ships with, so the coefficients and
+backtest numbers it shows are computed by the code the reader is looking at.
 
 ## Run it
 
@@ -36,7 +53,7 @@ snapshot's own `as_of` date, never to the wall clock.
 ## Layout
 
 - `main.ts` — the entry program: snapshot in, board + dashboard data + dossier out.
-- `lib/model.ts` — the peer-multiple model, the board builder and the farm-plan generator.
+- `lib/model.ts` — the fitted model, its backtests, the board builder and the farm-plan generator.
 - `dashboard/` — the static page (board, detail view, filters); renders with no network.
 - `screenshots/` — the board, one protocol's detail view, and a filtered view.
 - `vendor/makefun-board.ts` — the kit's dossier library, vendored unchanged.
