@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Token Launch Radar — pre-token protocols ranked by implied launch value</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="masthead">
+  <div class="masthead-in">
+    <div>
+      <h1><span class="blip"></span>Token Launch Radar</h1>
+      <p class="sub">Every protocol in the snapshot that records no token yet, ranked by what its launch
+      would be worth if it issued one at the price its trading peers already get — and how to farm each one.</p>
+    </div>
+    <div class="mast-meta">
+      <div><span class="k">Snapshot</span><span class="v" id="m-asof">—</span></div>
+      <div><span class="k">Model</span><span class="v" id="m-model">—</span></div>
+      <div><span class="k">Source</span><span class="v">DefiLlama, sealed</span></div>
+    </div>
+  </div>
+  <div class="stats" id="stats"></div>
+</header>
+
+<main>
+  <section id="board-view">
+    <div class="controls">
+      <input id="q" type="search" placeholder="Search protocols…" aria-label="Search protocols">
+      <select id="f-cat" aria-label="Filter by category"></select>
+      <select id="f-chain" aria-label="Filter by chain"></select>
+      <label class="check"><input id="f-wl" type="checkbox"> Watchlist only</label>
+      <select id="f-sort" aria-label="Sort the board">
+        <option value="rank">Sort: implied value</option>
+        <option value="tvl">Sort: TVL</option>
+        <option value="change">Sort: 7-day change</option>
+        <option value="age">Sort: age</option>
+        <option value="multiple">Sort: implied × TVL</option>
+      </select>
+      <span class="count" id="count"></span>
+    </div>
+
+    <table class="board">
+      <thead><tr>
+        <th class="num">#</th><th>Protocol</th><th>Category</th><th>Chains</th>
+        <th class="num">TVL</th><th class="num">7d</th><th class="num">Age</th>
+        <th class="num">Implied value</th><th class="num">× TVL</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <p class="hint">Select a protocol for its detail view: the arithmetic behind its implied value,
+    the trading peers it was priced against, and its farm plan. A ★ marks the snapshot's own watchlist —
+    the $50M floor every row here is measured against, never the ceiling of this board.</p>
+
+    <section class="panel" id="method">
+      <h2>How the implied value is built</h2>
+      <p>Nothing here is a hand-picked list. One function prices every row from the snapshot's own
+      figures, and each row's detail view shows its arithmetic:</p>
+      <ol class="formula">
+        <li><b>Peer multiple.</b> For the protocol's category, take every protocol whose token already
+        trades and divide its market cap by its TVL. The multiple is the <i>median</i> of those ratios,
+        so one runaway token cannot bend it. A category with fewer than 3 trading peers falls back to the
+        median across all tokened protocols except centralised exchanges.</li>
+        <li><b>Momentum.</b> The 7-day TVL change, clamped to −50%…+150%, moves the value by up to
+        ×0.35 of itself: a protocol gathering TVL this week is priced above a shrinking one.</li>
+        <li><b>Maturity.</b> ×0.70 for a brand-new listing rising to ×1.20 at four years tracked with no
+        token: the longer a protocol has run at scale without issuing, the more a launch would carry.</li>
+        <li><b>Size.</b> ×0.55 at $5M of TVL rising on a log scale to ×1.00 at $500M: small protocols
+        launch into thinner markets than the peers their multiple came from.</li>
+      </ol>
+      <p class="eq">implied value = TVL × peer multiple × momentum × maturity × size, rounded to whole dollars.</p>
+      <p>The board says a protocol <i>records no token</i> — DefiLlama's record is not proof that none
+      exists — and an implied value is this model's claim about a launch that may never happen, not a
+      prediction that it will. Protocols that are wrapped, staked, bridged or versioned products of a
+      token that already trades are left off the board: their launch already happened, under another name.</p>
+    </section>
+
+    <section class="panel" id="live-panel">
+      <h2>Already trading — set aside, not ranked</h2>
+      <p>The largest tokened protocols in the snapshot. They are the peer set the model prices from;
+      the market has already given them a value, so the radar does not invent one.</p>
+      <table class="board live">
+        <thead><tr><th>Protocol</th><th>Category</th><th class="num">TVL</th><th class="num">Market cap</th><th class="num">Mcap × TVL</th></tr></thead>
+        <tbody id="live-rows"></tbody>
+      </table>
+    </section>
+  </section>
+
+  <section id="detail-view" hidden></section>
+</main>
+
+<footer>
+  <p id="foot-source">—</p>
+  <p>Implied values are one model's arithmetic on a sealed snapshot, stated so they can be checked —
+  not investment advice, and not a promise that any protocol will issue a token.</p>
+</footer>
+
+<script src="../data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
